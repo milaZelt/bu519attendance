@@ -3,6 +3,8 @@
 @using attendance.Components.Models
 @using attendance.Services
 @inject BlazorNonceService BlazorNonceService
+@inject AttendanceNotifier AttendanceNotifier
+@implements IDisposable
 
 <PageTitle>Daily attendance for @selectedDate</PageTitle>
 
@@ -76,7 +78,7 @@ else
                             @if (students[studentnumber].Present)
                             {
                                 <div class="exempt" @onclick:stopPropagation @onclick="() => ToggleExempt(localStudentNumber)">
-                                    <input type="checkbox" @bind="students[studentnumber].Exempt" />
+                                    <input type="checkbox" checked="@students[studentnumber].Exempt" />
                                     Exempt
                                 </div>
                             }
@@ -112,6 +114,10 @@ else
     // make a static list of dates based on the schedule
     private List<DateTime> availableDates = new List<DateTime>();
 
+    // Live updates: identifies this page so it ignores its own broadcasts
+    private readonly Guid pageId = Guid.NewGuid();
+    private string LiveKey => AttendanceNotifier.Key(classname, selectedDate);
+
     List<Student> students = new List<Student>();
 
     private int AttendanceCount => students.Count(student => student.Present && !student.IsInactive);
@@ -119,6 +125,8 @@ else
 
     protected override async Task OnInitializedAsync()
     {
+        AttendanceNotifier.Changed += OnChangedElsewhere;
+
         classname = Environment.GetEnvironmentVariable("CLASSFOLDER") ?? "Classes";
         principalName = BlazorNonceService?.Nonce ?? string.Empty; 
         studentClass = new StudentClass(classname);
@@ -205,6 +213,12 @@ else
         {
             students = await studentClass.LoadStudentDataAsync(selectedDate);
             status = studentClass.status;
+
+            // Show changes others have made but not saved yet
+            foreach (var change in AttendanceNotifier.GetUnsaved(LiveKey))
+            {
+                ApplyChange(change);
+            }
         }
         loading = false;
         showStudents = true;
@@ -219,23 +233,57 @@ else
         saving = true;
         StateHasChanged();
         studentClass.Students = students;
-        await studentClass.SaveStudentDataAsync(selectedDate);
+        if (await studentClass.SaveStudentDataAsync(selectedDate))
+        {
+            AttendanceNotifier.ClearUnsaved(LiveKey);
+        }
         saving = false;
         status = studentClass.status;
         StateHasChanged();
     }
 
-    void TogglePresent(int index)
+    async Task TogglePresent(int index)
     {
-        //Console.WriteLine($"Index is {index}");
         students[index].Present = !students[index].Present;
-        //Console.WriteLine($"{students[index].Name} is {(students[index].Present ? "present" : "absent")}");
         StateHasChanged(); // Ensure the UI is updated
+        await PublishAsync(students[index]);
     }
-    void ToggleExempt(int index)
+    async Task ToggleExempt(int index)
     {
         students[index].Exempt = !students[index].Exempt;
         StateHasChanged(); // Ensure the UI is updated
+        await PublishAsync(students[index]);
+    }
+
+    private Task PublishAsync(Student s) => AttendanceNotifier.PublishAsync(LiveKey,
+        new StudentData { BUID = s.BUID, Present = s.Present, Exempt = s.Exempt }, pageId);
+
+    private void ApplyChange(StudentData change)
+    {
+        var student = students.FirstOrDefault(x => x.BUID == change.BUID);
+        if (student != null)
+        {
+            student.Present = change.Present;
+            student.Exempt = change.Exempt;
+        }
+    }
+
+    // Another page changed a student: show it here if this page has the same class and date open.
+    // InvokeAsync runs the update on this page's own thread.
+    private Task OnChangedElsewhere(string key, StudentData change, Guid sourceId)
+    {
+        if (sourceId == pageId) return Task.CompletedTask;
+        return InvokeAsync(() =>
+        {
+            if (!showStudents || key != LiveKey) return;
+            ApplyChange(change);
+            StateHasChanged();
+        });
+    }
+
+    public void Dispose()
+    {
+        AttendanceNotifier.Changed -= OnChangedElsewhere;
     }
 
 }
