@@ -14,6 +14,7 @@ builder.Services.TryAddEnumerable(
 builder.Services.AddScoped<BlazorNonceService>();
 builder.Services.AddHttpContextAccessor(); // Register IHttpContextAccessor
 builder.Services.AddScoped<HttpContextAccessorService>(); // Register HttpContextAccessorService
+builder.Services.AddSingleton<AttendanceNotifier>(); // Pushes live attendance changes to every open page
 
 // Add Application Insights telemetry services
 builder.Services.AddApplicationInsightsTelemetry();
